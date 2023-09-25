@@ -1,5 +1,5 @@
 from enum import Enum, IntEnum
-from typing import Any, ClassVar, Union, Optional, Iterator
+from typing import Any, ClassVar, Union, Optional, Iterator, Literal
 from uuid import uuid4
 
 import pandas as pd
@@ -217,6 +217,9 @@ class FeatureManager(BaseModel):
                 )
 
 
+PopIndexType = Literal["metadata", "all", "features", None]
+
+
 class FeatureSpace(BaseModel):
     name: str
     id: UUID4 = Field(..., default_factory=lambda: uuid4())
@@ -250,30 +253,37 @@ class FeatureSpace(BaseModel):
     def __iter__(self):
         iter(self.features.items())
 
-    def sample_df(self, n: int = 1000, with_ids=True):
+    def sample_df(self, n: int = 1000):
         df = pd.DataFrame()
         for feature, feature_def in self.features.items():
             df[feature] = feature_def.sample(n)
 
-        if with_ids:
-            df["space_id"] = self.id.int
-            df["id"] = [uuid4().int for _ in range(n)]
+        df["space_id"] = self.id.int
+        df["id"] = [uuid4().int for _ in range(n)]
 
-            metadata_cols = ["id", "space_id"]
-            df.columns = pd.MultiIndex.from_tuples(
-                [
-                    ("metadata" if colname in metadata_cols else "features", colname)
-                    for colname in df.columns
-                ],
-                names=["group", "field"],
-            )
-            df = df[["metadata", "features"]]
+        metadata_cols = ["id", "space_id"]
+        df.columns = pd.MultiIndex.from_tuples(
+            [
+                ("metadata" if colname in metadata_cols else "features", colname)
+                for colname in df.columns
+            ],
+            names=["group", "field"],
+        )
+        df = df[["metadata", "features"]]
 
         return df
 
-    def make_population(self, n: int = 1000, with_ids=True, index_by_metadata=True):
+    def make_population(
+        self,
+        n: int = 1000,
+        index_by: PopIndexType = None,
+        flatten=False,
+    ):
         return Population.from_feature_space(
-            space=self, n=n, with_ids=with_ids, index_by_metadata=index_by_metadata
+            space=self,
+            n=n,
+            index_by=index_by,
+            flatten=flatten,
         )
 
 
@@ -294,24 +304,51 @@ class Population(BaseModel):
 
     @classmethod
     def from_feature_space(
-        cls, space: FeatureSpace, n: int, with_ids=True, index_by_metadata=True
+        cls, space: FeatureSpace, n: int, index_by: PopIndexType = None, flatten=False
     ):
-        if index_by_metadata and not with_ids:
-            raise ValueError(
-                "'with_ids' must be set to true to use the index_by_metadata option"
-            )
-        df = space.sample_df(n=n, with_ids=with_ids)
+        df = space.sample_df(n=n)
         pop = cls(space=space, data=df)
-        if index_by_metadata:
-            pop.index_by_metadata()
+        pop.index_by(index_by, flatten=flatten)
         return pop
 
-    def index_by_metadata(self):
-        # TODO: add check if it is already indexed this way
-        self.data = self.data.set_index(
-            keys=[("metadata", colname) for colname in self.data["metadata"].columns]
-        )  # ["features"]
-        self.data.index.names = (name for (group, name) in self.data.index.names)
+    def index_by(
+        self,
+        index_by: PopIndexType = None,
+        flatten=False,
+    ):
+        # TODO: add check if it is already indexed this way / unset index
+        if index_by in ["metadata", "features"]:
+            group_to_take = index_by
+            self.data = self.data.set_index(
+                keys=[
+                    (group_to_take, colname)
+                    for colname in self.data[group_to_take].columns
+                ]
+            )
+            if flatten:
+                group_to_leave = "metadata" if index_by == "features" else "features"
+                self.data = self.data[group_to_leave]
+                self.data.index.names = (
+                    name for (group, name) in self.data.index.names
+                )
+        elif index_by == "all":
+            # From  hierarchical to flat columns
+            self.data = self.data.set_index(
+                keys=list(self.data.columns.to_flat_index().values)
+            )
+            self.data = pd.DataFrame(index=self.data.index)
+            if flatten:
+                self.data.index.names = (
+                    name for (group, name) in self.data.index.names
+                )
+        elif index_by == None:
+            if flatten:
+                self.data.columns = self.data.columns.to_flat_index()
+
+                self.data = self.data.rename(
+                    mapper={(group, name): name for group, name in self.data.columns},
+                    axis=1,
+                )
 
     def to_index(self):
         pass
