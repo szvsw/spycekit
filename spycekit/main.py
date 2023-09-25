@@ -1,10 +1,20 @@
 from enum import Enum, IntEnum
-from typing import ClassVar, Union, Optional, Iterator, Generator
+from typing import Any, ClassVar, Union, Optional, Iterator
 from uuid import uuid4
 
+import pandas as pd
 import numpy as np
 
-from pydantic import BaseModel, Field, model_validator, create_model, computed_field, UUID4
+from pydantic import (
+    ConfigDict,
+    BaseModel,
+    Field,
+    model_validator,
+    create_model,
+    computed_field,
+    UUID4,
+    InstanceOf,
+)
 from pydantic.fields import FieldInfo
 
 # TODO: Pandera Integration
@@ -23,7 +33,7 @@ from pydantic.fields import FieldInfo
 
 class DesignBase(BaseModel):
     space_id: ClassVar[UUID4] = uuid4()
-    id: UUID4 = Field(..., default_factory= lambda : uuid4())
+    id: UUID4 = Field(..., default_factory=lambda: uuid4())
 
     @classmethod
     @property
@@ -36,7 +46,7 @@ class DesignBase(BaseModel):
             yield feature, fieldinfo
         ```
         """
-        return filter(lambda field: field[0] != "id" ,cls.model_fields.items())
+        return filter(lambda field: field[0] != "id", cls.model_fields.items())
 
     @classmethod
     @property
@@ -51,24 +61,8 @@ class DesignBase(BaseModel):
         """
         return iter(name for name, _ in cls.features_list)
 
-    
-    def __iter__(self):
-        """
-        Usage:
-
-        ```
-        for feature, value in self:
-            yield feature, value
-        ```
-        """
-        return iter(((feature, getattr(self, feature)) for (feature, feature_def) in self.features_list))
-
-
-
-
     @classmethod
     def to_featuremanager(cls, feature: str):
-
         feature_names = cls.feature_names
         if feature not in feature_names:
             raise ValueError(
@@ -106,6 +100,7 @@ class DesignBase(BaseModel):
         for param, field_info in cls.features_list:
             assert "id" != param
             space.features[param] = cls.to_featuremanager(param)
+
         return space
 
     @classmethod
@@ -117,6 +112,35 @@ class DesignBase(BaseModel):
             data[feature.fieldname] = sample
 
         return cls(**data)
+
+    def __iter__(self) -> Iterator[tuple[str, Union[float, IntEnum]]]:
+        """
+        Usage:
+
+        ```
+        for feature, value in self:
+            yield feature, value
+        ```
+        """
+        return iter(
+            (
+                (feature, getattr(self, feature))
+                for (feature, feature_def) in self.features_list
+            )
+        )
+
+    # should this be a series?
+    def to_series(self):
+        data = self.model_dump()
+        series = pd.Series(data)
+        return series
+
+    @classmethod
+    @property
+    def index_cols(self, with_space_id=False):
+        base = ["id"] if not with_space_id else ["space_id", "id"]
+        base.extend(self.feature_names)
+        return base
 
 
 class FeatureType(str, Enum):
@@ -195,7 +219,7 @@ class FeatureManager(BaseModel):
 
 class FeatureSpace(BaseModel):
     name: str
-    id: UUID4 = Field(..., default_factory=lambda : uuid4())
+    id: UUID4 = Field(..., default_factory=lambda: uuid4())
     features: dict[str, FeatureManager] = {}
 
     def to_designmodel(self, base=DesignBase):
@@ -218,44 +242,76 @@ class FeatureSpace(BaseModel):
 
         # TODO: feature spaces should have names, and that name should be used for design model
         return create_model(
-            "Design",
+            self.name,
             __base__=base,
             **field_definitions,
         )
 
+    def __iter__(self):
+        iter(self.features.items())
 
-if __name__ == "__main__":
-    import json
+    def sample_df(self, n: int = 1000, with_ids=True):
+        df = pd.DataFrame()
+        for feature, feature_def in self.features.items():
+            df[feature] = feature_def.sample(n)
 
-    class Style(IntEnum):
-        Cool = 0
-        Fast = 1
+        if with_ids:
+            df["space_id"] = self.id.int
+            df["id"] = [uuid4().int for _ in range(n)]
 
-    class MyDesign(DesignBase):
-        length: float = Field(..., ge=0.5, le=2.5)
-        width: float = Field(..., ge=3.5, le=4.5)
-        style: Style
+            metadata_cols = ["id", "space_id"]
+            df.columns = pd.MultiIndex.from_tuples(
+                [
+                    ("metadata" if colname in metadata_cols else "features", colname)
+                    for colname in df.columns
+                ],
+                names=["group", "field"],
+            )
+            df = df[["metadata", "features"]]
 
-    d = MyDesign(length=0.5, width=4, style=Style.Cool)
-    sim = MyDesign.sample_once()
+        return df
 
-    # Similar, but the latter can be used with datamodel-codegen
-    # Option 1: Convert the Design to a FeatureSpace, then dump the feature space
-    featurespace = MyDesign.to_featurespace()
-    serialized_featurespace = featurespace.model_dump_json(indent=4)
-    print(serialized_featurespace)
+    def make_population(self, n: int = 1000, with_ids=True, index_by_metadata=True):
+        return Population.from_feature_space(
+            space=self, n=n, with_ids=with_ids, index_by_metadata=index_by_metadata
+        )
 
-    # Option 2:
-    # Dump the JSON Schema of the design
-    serialized_model_schema = json.dumps(MyDesign.model_json_schema(), indent=4)
-    print(serialized_model_schema)
 
-    # Deserialization
-    # Option 1
-    # Reconstruct a class which is identical to the design (up to validation) from a feature space representation!
-    # Assume you have already loaded the featurespace using standard pydantic deserializer
-    # NB: Option 2 would be using json schema and data model codegen
-    NewModel = featurespace.to_designmodel()
-    d = NewModel(length=1, width=4, style=Style.Cool)
-    d.style = Style.Fast
-    print(NewModel.sample_once())
+class Population(BaseModel):
+    model_config = ConfigDict(
+        title="Design Space Population",
+        arbitrary_types_allowed=True,
+    )
+
+    id: UUID4 = Field(..., default_factory=lambda: uuid4())
+    space: FeatureSpace
+    data: pd.DataFrame
+
+    @computed_field
+    @property
+    def size(self) -> int:
+        return len(self.data)
+
+    @classmethod
+    def from_feature_space(
+        cls, space: FeatureSpace, n: int, with_ids=True, index_by_metadata=True
+    ):
+        if index_by_metadata and not with_ids:
+            raise ValueError(
+                "'with_ids' must be set to true to use the index_by_metadata option"
+            )
+        df = space.sample_df(n=n, with_ids=with_ids)
+        pop = cls(space=space, data=df)
+        if index_by_metadata:
+            pop.index_by_metadata()
+        return pop
+
+    def index_by_metadata(self):
+        # TODO: add check if it is already indexed this way
+        self.data = self.data.set_index(
+            keys=[("metadata", colname) for colname in self.data["metadata"].columns]
+        )  # ["features"]
+        self.data.index.names = (name for (group, name) in self.data.index.names)
+
+    def to_index(self):
+        pass
