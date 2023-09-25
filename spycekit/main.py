@@ -1,9 +1,11 @@
 from enum import Enum, IntEnum
-from typing import Optional, Union, get_origin, get_args
+from typing import ClassVar, Union, Optional, Iterator, Generator
+from uuid import uuid4
 
 import numpy as np
 
-from pydantic import BaseModel, Field, model_validator, create_model, computed_field
+from pydantic import BaseModel, Field, model_validator, create_model, computed_field, UUID4
+from pydantic.fields import FieldInfo
 
 # TODO: Pandera Integration
 # TODO: saving and writing files
@@ -20,15 +22,67 @@ from pydantic import BaseModel, Field, model_validator, create_model, computed_f
 
 
 class DesignBase(BaseModel):
+    space_id: ClassVar[UUID4] = uuid4()
+    id: UUID4 = Field(..., default_factory= lambda : uuid4())
+
+    @classmethod
+    @property
+    def features_list(cls) -> Iterator[tuple[str, FieldInfo]]:
+        """
+        Usage:
+
+        ```
+        for featurename, fieldinfo in self:
+            yield feature, fieldinfo
+        ```
+        """
+        return filter(lambda field: field[0] != "id" ,cls.model_fields.items())
+
+    @classmethod
+    @property
+    def feature_names(cls) -> Iterator[str]:
+        """
+        Usage:
+
+        ```
+        for feature in self:
+            featurename
+        ```
+        """
+        return iter(name for name, _ in cls.features_list)
+
+    
+    def __iter__(self):
+        """
+        Usage:
+
+        ```
+        for feature, value in self:
+            yield feature, value
+        ```
+        """
+        return iter(((feature, getattr(self, feature)) for (feature, feature_def) in self.features_list))
+
+
+
+
     @classmethod
     def to_featuremanager(cls, feature: str):
-        if feature not in cls.model_fields:
+
+        feature_names = cls.feature_names
+        if feature not in feature_names:
             raise ValueError(
-                f"{feature} is not a valid feature; options: {list(cls.model_fields.keys())}"
+                f"{feature} is not a valid feature; options: {list(feature_names)}"
             )
 
+        if feature == "id":
+            raise ValueError("ID is not a samplable feature.")
+
         feature_def = cls.model_json_schema()["properties"][feature]
+
+        # TODO: Consider replacing with a protected accessor
         feature_field = cls.model_fields[feature]
+
         if issubclass(feature_field.annotation, Enum):
             options = {
                 enumval.name: enumval.value
@@ -48,15 +102,16 @@ class DesignBase(BaseModel):
 
     @classmethod
     def to_featurespace(cls):
-        space = FeatureSpace(name=cls.__name__)
-        for param in cls.model_fields:
+        space = FeatureSpace(name=cls.__name__, id=cls.space_id)
+        for param, field_info in cls.features_list:
+            assert "id" != param
             space.features[param] = cls.to_featuremanager(param)
         return space
 
     @classmethod
     def sample_once(cls):
         data = {}
-        for fieldname in cls.model_fields:
+        for fieldname, _ in cls.features_list:
             feature = cls.to_featuremanager(fieldname)
             sample = feature.sample()
             data[feature.fieldname] = sample
@@ -140,6 +195,7 @@ class FeatureManager(BaseModel):
 
 class FeatureSpace(BaseModel):
     name: str
+    id: UUID4 = Field(..., default_factory=lambda : uuid4())
     features: dict[str, FeatureManager] = {}
 
     def to_designmodel(self, base=DesignBase):
@@ -180,6 +236,7 @@ if __name__ == "__main__":
         width: float = Field(..., ge=3.5, le=4.5)
         style: Style
 
+    d = MyDesign(length=0.5, width=4, style=Style.Cool)
     sim = MyDesign.sample_once()
 
     # Similar, but the latter can be used with datamodel-codegen
@@ -191,6 +248,7 @@ if __name__ == "__main__":
     # Option 2:
     # Dump the JSON Schema of the design
     serialized_model_schema = json.dumps(MyDesign.model_json_schema(), indent=4)
+    print(serialized_model_schema)
 
     # Deserialization
     # Option 1
