@@ -11,27 +11,23 @@ description = "Version and manage design spaces with the power of Pydantic"
 readme = "README.md"
 requires-python = ">=3.8"
 license = { file = "LICENSE" }
-dependencies = [
-    "requests",
-    'importlib-metadata; python_version<"3.8"',
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
 ]
 dynamic = ["version"]
+keywords = ["data science", "machine learning", "design space exploration", "design of experiments"]
 
+[project.urls]
+Documentation = "https://github.comm/szvsw/spycekit"
+Repository = "https://github.comm/szvsw/spycekit"
 
-[tool.setuptools.dependencies]
-install_requires = [
-  "numpy",
-  "pydantic>=2",
-  "pandas",
-  "pandera",
-]
-extras_require = { "dev" = ["black", "isort", "pytest"] }
 
 [tool.black]
 line-length = 88
 
 [tool.isort]
 profile = "black"
-
-[tool.setuptools.metadata]
-keywords = ["data science", "machine learning", "design space exploration", "design of experiments"]
