@@ -244,7 +244,6 @@ class FeatureSpace(BaseModel):
                     f"{fieldname} is set to an unknown FeatureType {fielddef.mode}"
                 )
 
-        # TODO: feature spaces should have names, and that name should be used for design model
         return create_model(
             self.name,
             __base__=base,
@@ -253,6 +252,7 @@ class FeatureSpace(BaseModel):
 
     @classmethod
     def from_space_json(cls, space_json: str):
+        # TODO: Why do we need to do this hacky deserialize?
         space_dict = json.loads(space_json)
         fs = cls.model_validate(space_dict)
         # Create Feature Space, which currently requires a little hack for the FeatureManager
