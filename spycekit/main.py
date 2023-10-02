@@ -1,4 +1,5 @@
 from enum import Enum, IntEnum
+import json
 from typing import Any, ClassVar, Union, Optional, Iterator, Literal
 from uuid import uuid4
 
@@ -249,6 +250,16 @@ class FeatureSpace(BaseModel):
             __base__=base,
             **field_definitions,
         )
+
+    @classmethod
+    def from_space_json(cls, space_json: str):
+        space_dict = json.loads(space_json)
+        fs = cls.model_validate(space_dict)
+        # Create Feature Space, which currently requires a little hack for the FeatureManager
+        for feature in fs.features:
+            fs.features[feature] = FeatureManager(**space_dict["features"][feature])
+
+        return fs
 
     def __iter__(self):
         return iter(self.features.items())
