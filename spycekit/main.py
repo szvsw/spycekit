@@ -251,7 +251,55 @@ class FeatureSpace(BaseModel):
         )
 
     def __iter__(self):
-        iter(self.features.items())
+        return iter(self.features.items())
+
+    def transform_features(self, features: pd.DataFrame):
+        # create a new df to hold the transformed features
+        features_transformed = pd.DataFrame(index=features.index)
+
+        # iterate over the features in the feature space
+        for feature, feature_def in self:
+            # if the feature is categorical, use pd.get_dummies to one-hot encode
+            if feature_def.mode == FeatureType.Categorical:
+                feature_vals = features[feature]
+                onehots = pd.get_dummies(
+                    feature_vals, prefix=feature, prefix_sep="_", dtype=bool
+                )
+                features_transformed = features_transformed.join(onehots)
+            # if the feature is continuous, use the bounds to normalize to [0,1]
+            elif feature_def.mode == FeatureType.Continuous:
+                fmin, fmax = feature_def.bounds
+                features_transformed[feature] = (features[feature] - fmin) / (
+                    fmax - fmin
+                )
+        return features_transformed
+
+    def inverse_transform_features(self, features: pd.DataFrame):
+        features_untransformed = pd.DataFrame(index=features.index)
+
+        # iterate over the features in the feature space
+        for feature, feature_def in self:
+            # if the feature is categorical, we get the onehot columns and then use the column which is true
+            if feature_def.mode == FeatureType.Categorical:
+                feat_names = features.columns[features.columns.str.startswith(feature)]
+                catcodes = pd.Series(
+                    [int(feat_name.split("_")[-1]) for feat_name in feat_names]
+                )
+                # get the feature columns
+                feat_vals = features[feat_names]
+                # get the column which is true for each row
+                idx = feat_vals.idxmax(axis=1)
+                # split the index string and get the last element, which is the category
+                idx = (idx.str.split("_").str[-1]).astype(int)
+                features_untransformed[feature] = idx
+
+            # if the feature is continuous, use the bounds to normalize to [0,1]
+            elif feature_def.mode == FeatureType.Continuous:
+                fmin, fmax = feature_def.bounds
+                features_untransformed[feature] = (features[feature]) * (
+                    fmax - fmin
+                ) + fmin
+        return features_untransformed
 
     def sample_df(self, n: int = 1000):
         df = pd.DataFrame()
